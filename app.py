@@ -3,34 +3,42 @@ import requests
 
 app = Flask(__name__)
 
+# البيانات المستخرجة والخاصة بالسيرفر الأصلي
 MAC_ADDRESS = "00:1A:79:0D:0F:7B"
 BASE_URL = "http://atk97.online/play/live.php"
+PACKAGE_NAME = "com.arabictvliveonlinehd"
 
+# إعداد الهيدرز مع دمج هوية تطبيقك والـ User-Agent المناسب للسيرفر
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (QtEmbedded; Linux; gstreamer) AppleWebKit/537.36 (KHTML, like Gecko) Safari/537.36 TizenX ",
+    "X-Requested-With": PACKAGE_NAME,  # إرسال حزمة الهوية الرسمية لتطبيقك
     "Cookie": f"mac={MAC_ADDRESS}"
 }
 
 @app.route('/play/<stream_id>')
+@app.route('/play/<stream_id>.ts')  # دعم إضافة .ts في نهاية الرابط لخدع مشغل التطبيق
 def play_stream(stream_id):
-    target_url = f"{BASE_URL}?mac={MAC_ADDRESS}&stream={stream_id}&extension=ts"
+    # تنظيف رقم القناة إذا كان يحتوي على امتداد .ts
+    clean_stream_id = stream_id.replace('.ts', '')
+    
+    # 1. بناء رابط جلب التوكن الديناميكي
+    target_url = f"{BASE_URL}?mac={MAC_ADDRESS}&stream={clean_stream_id}&extension=ts"
     
     try:
+        # 2. جلب الرابط الحقيقي والتوكن بالهوية الجديدة
         response = requests.get(target_url, headers=HEADERS, allow_redirects=False, timeout=5)
         
         if response.status_code in [301, 302] and 'Location' in response.headers:
             final_stream_url = response.headers['Location']
             
-            # فتح اتصال البث مع السيرفر الأصلي
+            # 3. جلب دفق الفيديو الفعلي وتمريره
             req = requests.get(final_stream_url, headers=HEADERS, stream=True, timeout=15)
             
             def generate():
-                # رفع الحزمة إلى 4096 لإعطاء مشغل التطبيق بيانات كافية للبدء فوراً دون استهلاك ذاكرة Render
                 for chunk in req.iter_content(chunk_size=4096):
                     if chunk:
                         yield chunk
             
-            # إضافة هيدرز احترافية لتنبيه مشغل التطبيق بأن البث حي ومباشر ومستمر
             res_headers = {
                 "Connection": "keep-alive",
                 "Cache-Control": "no-cache, no-store, must-revalidate",
