@@ -1,4 +1,4 @@
-from flask import Flask, Response
+from flask import Flask, redirect, Response
 import requests
 
 app = Flask(__name__)
@@ -14,25 +14,20 @@ HEADERS = {
 
 @app.route('/play/<stream_id>')
 def play_stream(stream_id):
-    # 1. بناء رابط جلب التوكن الديناميكي بناءً على رقم القناة المطلوبة
+    # 1. بناء رابط جلب التوكن الديناميكي
     target_url = f"{BASE_URL}?mac={MAC_ADDRESS}&stream={stream_id}&extension=ts"
     
     try:
-        # 2. جلب الرابط الحقيقي المشفر والتوكن من السيرفر الأصلي دون تتبع التحويل تلقائياً
+        # 2. جلب الرابط الحقيقي المشفر والتوكن من السيرفر الأصلي
         response = requests.get(target_url, headers=HEADERS, allow_redirects=False, timeout=5)
         
         if response.status_code in [301, 302] and 'Location' in response.headers:
             final_stream_url = response.headers['Location']
             
-            # 3. نظام الـ Proxy: السيرفر السحابي يقرأ البث ويمرره للمستخدم مباشرة
-            # هذا يضمن تشغيلها على أي شبكة لأن السيرفر الأصلي يرى IP سيرفر Render فقط
-            req = requests.get(final_stream_url, stream=True, timeout=10)
-            
-            def generate():
-                for chunk in req.iter_content(chunk_size=4096):
-                    yield chunk
-                    
-            return Response(generate(), content_type="video/mp2t")
+            # 3. نظام التحويل السريع (Redirect):
+            # نقوم بإرسال الرابط النهائي الفرِش لتطبيقك مباشرة ليقوم بتشغيله
+            # هذا يحمي ذاكرة السيرفر من الامتلاء ويمنع التقطيع تماماً
+            return redirect(final_stream_url)
         else:
             return "Error: Token creation failed", 400
 
@@ -40,5 +35,4 @@ def play_stream(stream_id):
         return f"Server Error: {str(e)}", 500
 
 if __name__ == '__main__':
-    # تشغيل محلي للاختبار (عند رفعه على Render سيتولى gunicorn أمر التشغيل تلقائياً)
     app.run(host='0.0.0.0', port=5000)
