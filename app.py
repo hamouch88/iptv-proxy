@@ -1,9 +1,8 @@
-from flask import Flask, redirect, Response
+from flask import Flask, Response
 import requests
 
 app = Flask(__name__)
 
-# البيانات المستخرجة والخاصة بالسيرفر الأصلي
 MAC_ADDRESS = "00:1A:79:0D:0F:7B"
 BASE_URL = "http://atk97.online/play/live.php"
 
@@ -14,20 +13,32 @@ HEADERS = {
 
 @app.route('/play/<stream_id>')
 def play_stream(stream_id):
-    # 1. بناء رابط جلب التوكن الديناميكي
     target_url = f"{BASE_URL}?mac={MAC_ADDRESS}&stream={stream_id}&extension=ts"
     
     try:
-        # 2. جلب الرابط الحقيقي المشفر والتوكن من السيرفر الأصلي
         response = requests.get(target_url, headers=HEADERS, allow_redirects=False, timeout=5)
         
         if response.status_code in [301, 302] and 'Location' in response.headers:
             final_stream_url = response.headers['Location']
             
-            # 3. نظام التحويل السريع (Redirect):
-            # نقوم بإرسال الرابط النهائي الفرِش لتطبيقك مباشرة ليقوم بتشغيله
-            # هذا يحمي ذاكرة السيرفر من الامتلاء ويمنع التقطيع تماماً
-            return redirect(final_stream_url)
+            # فتح اتصال البث مع السيرفر الأصلي
+            req = requests.get(final_stream_url, headers=HEADERS, stream=True, timeout=15)
+            
+            def generate():
+                # رفع الحزمة إلى 4096 لإعطاء مشغل التطبيق بيانات كافية للبدء فوراً دون استهلاك ذاكرة Render
+                for chunk in req.iter_content(chunk_size=4096):
+                    if chunk:
+                        yield chunk
+            
+            # إضافة هيدرز احترافية لتنبيه مشغل التطبيق بأن البث حي ومباشر ومستمر
+            res_headers = {
+                "Connection": "keep-alive",
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0"
+            }
+                    
+            return Response(generate(), content_type="video/mp2t", headers=res_headers)
         else:
             return "Error: Token creation failed", 400
 
