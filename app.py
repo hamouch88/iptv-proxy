@@ -1,4 +1,4 @@
-from flask import Flask, redirect, request, Response
+from flask import Flask, request, Response
 import requests
 import re
 import threading
@@ -41,13 +41,13 @@ def get_live_token(server_key):
         print(f"[-] Handshake error for {server_key}: {e}")
         return None, None
 
-# مسار الصفحة الرئيسية (مهم جداً لعملية الإيقاظ)
+# مسار الصفحة الرئيسية (مهم جداً لعملية الإيقاظ الذاتي)
 @app.route('/')
 def home():
-    return "IPTV Proxy Server is Running Smoothly & Awake!", 200
+    return "IPTV Streaming Proxy Server is Running Smoothly & Awake!", 200
 
 @app.route('/play/<server_key>/<stream_id>')
-def dynamic_redirect(server_key, stream_id):
+def dynamic_proxy_stream(server_key, stream_id):
     if server_key not in SERVERS:
         return "Server not found", 404
         
@@ -85,30 +85,38 @@ def dynamic_redirect(server_key, stream_id):
                 if http_match:
                     final_url = http_match.group(1)
 
-            # إذا تم توليد الرابط بنجاح، نقوم بإرجاعه مع حزمة هيدرز كسر الحماية والتخطي
+            # تحويل السيرفر إلى نظام Proxy لبث الفيديو مباشرة للتطبيق بدون كود التحويل (302 Redirect)
             if final_url:
-                print(f"[+] Fresh URL Generated successfully: {final_url}")
-                response = redirect(final_url)
+                print(f"[+] Proxying Stream directly to App: {final_url}")
                 
-                # --- هيدرز كسر حماية المشغلات وتخطي شاشات الحجب ---
+                # جلب البث المباشر من السيرفر الأصلي وتمريره كدفق (Stream) قطرة بقطرة
+                req_headers = {"User-Agent": USER_AGENT}
+                res = requests.get(final_url, headers=req_headers, stream=True, timeout=12)
+                
+                def generate():
+                    for chunk in res.iter_content(chunk_size=8192): # تملأ البيانات بسرعة للمشغل
+                        if chunk:
+                            yield chunk
+                            
+                # بناء استجابة فيديو متكاملة مع هيدرز كسر حماية المشغلات والـ CORS
+                response = Response(generate(), content_type=res.headers.get('Content-Type', 'video/mp2t'))
                 response.headers["Access-Control-Allow-Origin"] = "*"
-                response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-                response.headers["Access-Control-Allow-Headers"] = "Bypass-Tunnel-Reminder, User-Agent, X-Requested-With"
-                response.headers["Bypass-Tunnel-Reminder"] = "true"
+                response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+                response.headers["Access-Control-Allow-Headers"] = "User-Agent, X-Requested-With"
+                response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
                 return response
 
     except Exception as e:
-        print(f"[-] Error parsing link: {e}")
+        print(f"[-] Error proxying stream: {e}")
         
     return "Stream unavailable", 404
 
 # --- آلية الإيقاظ الذاتي الذكية لمنع سيرفر Render من النوم ---
 def keep_server_awake():
-    # ننتظر دقيقة واحدة بعد تشغيل السيرفر لأول مرة لكي يستقر قبل بدء الإرسال
-    time.sleep(60)
+    time.sleep(60) # ننتظر دقيقة بعد تشغيل السيرفر لأول مرة
     while True:
         try:
-            # السيرفر يقوم بطلب صفحته الرئيسية كل 12 دقيقة لمنع النوم الافتراضي (15 دقيقة)
+            # السيرفر يقوم بطلب صفحته الرئيسية كل 12 دقيقة لمنع النوم التلقائي
             requests.get("https://iptv-proxy-ik6e.onrender.com/", timeout=10)
             print("[+] Ping sent to Render: Server is kept awake successfully.")
         except Exception as e:
@@ -116,8 +124,8 @@ def keep_server_awake():
         time.sleep(720) # 720 ثانية تعادل 12 دقيقة تماماً
 
 if __name__ == '__main__':
-    # تشغيل خيط الإيقاظ الذاتي في الخلفية
+    # تشغيل خيط الإيقاظ الذاتي في الخلفية (Thread)
     threading.Thread(target=keep_server_awake, daemon=True).start()
     
-    print("[+] Developed Dynamic Token Redirector API is Running...")
+    print("[+] Developed Streaming Proxy API is Running...")
     app.run(host='0.0.0.0', port=5000, debug=False)
