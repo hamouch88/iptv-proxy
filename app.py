@@ -1,57 +1,123 @@
-from flask import Flask, Response
+from flask import Flask, redirect, request, Response
 import requests
+import re
+import threading
+import time
 
 app = Flask(__name__)
 
-# البيانات المستخرجة والخاصة بالسيرفر الأصلي
-MAC_ADDRESS = "00:1A:79:0D:0F:7B"
-BASE_URL = "http://atk97.online/play/live.php"
-PACKAGE_NAME = "com.arabictvliveonlinehd"
+USER_AGENT = "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp pb.1 EmbeddedLinux"
 
-# إعداد الهيدرز مع دمج هوية تطبيقك والـ User-Agent المناسب للسيرفر
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (QtEmbedded; Linux; gstreamer) AppleWebKit/537.36 (KHTML, like Gecko) Safari/537.36 TizenX ",
-    "X-Requested-With": PACKAGE_NAME,  # إرسال حزمة الهوية الرسمية لتطبيقك
-    "Cookie": f"mac={MAC_ADDRESS}"
+# قاعدة بيانات السيرفرات والماكات الشغالة الخاصة بك
+SERVERS = {
+    "atk": {
+        "portal": "http://atk97.online:80/portal.php",
+        "mac": "00:1A:79:0D:0F:7B",
+        "play_url": "http://atk97.online:80"
+    },
+    "bolachas": {
+        "portal": "http://bolachas.live:80/portal.php",
+        "mac": "00:1A:79:02:a0:93", 
+        "play_url": "http://bolachas.live:80"
+    }
 }
 
-@app.route('/play/<stream_id>')
-@app.route('/play/<stream_id>.ts')  # دعم إضافة .ts في نهاية الرابط لخدع مشغل التطبيق
-def play_stream(stream_id):
-    # تنظيف رقم القناة إذا كان يحتوي على امتداد .ts
-    clean_stream_id = stream_id.replace('.ts', '')
+def get_live_token(server_key):
+    srv = SERVERS[server_key]
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Cookie": f"mac={srv['mac']}",
+        "Referer": srv['portal'].replace('portal.php', 'c/'),
+        "Accept": "*/*"
+    }
+    session = requests.Session()
+    session.headers.update(headers)
+    try:
+        # خطوة المصافحة لتوليد توكن جديد متوافق مع وقت الطلب الحالي
+        res = session.get(f"{srv['portal']}?type=stb&action=handshake", timeout=7)
+        token = res.json().get('js', {}).get('token')
+        return session, token
+    except Exception as e:
+        print(f"[-] Handshake error for {server_key}: {e}")
+        return None, None
+
+# مسار الصفحة الرئيسية (مهم جداً لعملية الإيقاظ)
+@app.route('/')
+def home():
+    return "IPTV Proxy Server is Running Smoothly & Awake!", 200
+
+@app.route('/play/<server_key>/<stream_id>')
+def dynamic_redirect(server_key, stream_id):
+    if server_key not in SERVERS:
+        return "Server not found", 404
+        
+    print(f"[*] Request received for {server_key} - Channel: {stream_id}")
+    session, token = get_live_token(server_key)
     
-    # 1. بناء رابط جلب التوكن الديناميكي
-    target_url = f"{BASE_URL}?mac={MAC_ADDRESS}&stream={clean_stream_id}&extension=ts"
+    if not token:
+        return "Handshake failed", 500
+        
+    srv = SERVERS[server_key]
+    link_url = f"{srv['portal']}?type=itv&action=create_link&cmd=ffmpeg+http://localhost/ch/{stream_id}&token={token}"
     
     try:
-        # 2. جلب الرابط الحقيقي والتوكن بالهوية الجديدة
-        response = requests.get(target_url, headers=HEADERS, allow_redirects=False, timeout=5)
+        link_response = session.get(link_url, timeout=7)
+        raw_cmd = link_response.json().get('js', {}).get('cmd', '')
         
-        if response.status_code in [301, 302] and 'Location' in response.headers:
-            final_stream_url = response.headers['Location']
+        if raw_cmd:
+            final_url = ""
             
-            # 3. جلب دفق الفيديو الفعلي وتمريره
-            req = requests.get(final_stream_url, headers=HEADERS, stream=True, timeout=15)
-            
-            def generate():
-                for chunk in req.iter_content(chunk_size=4096):
-                    if chunk:
-                        yield chunk
-            
-            res_headers = {
-                "Connection": "keep-alive",
-                "Cache-Control": "no-cache, no-store, must-revalidate",
-                "Pragma": "no-cache",
-                "Expires": "0"
-            }
+            # 1. استخراج التوكن اللحظي الشغال لروابط play_token
+            token_match = re.search(r'play_token=([A-Za-z0-9_-]+)', raw_cmd)
+            if token_match:
+                play_token = token_match.group(1)
+                final_url = f"{srv['play_url']}/play/live.php?mac={srv['mac']}&stream={stream_id}&extension=ts&play_token={play_token}"
+                
+            # 2. إذا كان السيرفر يعتمد صيغة الـ live/play الدائرية التلقائية
+            elif "/live/play/" in raw_cmd:
+                clean_path = re.search(r'/live/play/[A-Za-z0-9==./_-]+', raw_cmd)
+                if clean_path:
+                    final_url = f"{srv['play_url']}{clean_path.group(0).strip()}"
                     
-            return Response(generate(), content_type="video/mp2t", headers=res_headers)
-        else:
-            return "Error: Token creation failed", 400
+            # 3. حل احتياطي في حال أرجع السيرفر رابط HTTP مباشر
+            elif "http" in raw_cmd:
+                http_match = re.search(r'(http[s]?://[^\s"\']+)', raw_cmd)
+                if http_match:
+                    final_url = http_match.group(1)
+
+            # إذا تم توليد الرابط بنجاح، نقوم بإرجاعه مع حزمة هيدرز كسر الحماية والتخطي
+            if final_url:
+                print(f"[+] Fresh URL Generated successfully: {final_url}")
+                response = redirect(final_url)
+                
+                # --- هيدرز كسر حماية المشغلات وتخطي شاشات الحجب ---
+                response.headers["Access-Control-Allow-Origin"] = "*"
+                response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+                response.headers["Access-Control-Allow-Headers"] = "Bypass-Tunnel-Reminder, User-Agent, X-Requested-With"
+                response.headers["Bypass-Tunnel-Reminder"] = "true"
+                return response
 
     except Exception as e:
-        return f"Server Error: {str(e)}", 500
+        print(f"[-] Error parsing link: {e}")
+        
+    return "Stream unavailable", 404
+
+# --- آلية الإيقاظ الذاتي الذكية لمنع سيرفر Render من النوم ---
+def keep_server_awake():
+    # ننتظر دقيقة واحدة بعد تشغيل السيرفر لأول مرة لكي يستقر قبل بدء الإرسال
+    time.sleep(60)
+    while True:
+        try:
+            # السيرفر يقوم بطلب صفحته الرئيسية كل 12 دقيقة لمنع النوم الافتراضي (15 دقيقة)
+            requests.get("https://iptv-proxy-ik6e.onrender.com/", timeout=10)
+            print("[+] Ping sent to Render: Server is kept awake successfully.")
+        except Exception as e:
+            print(f"[-] Ping failed (Server might be updating): {e}")
+        time.sleep(720) # 720 ثانية تعادل 12 دقيقة تماماً
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    # تشغيل خيط الإيقاظ الذاتي في الخلفية
+    threading.Thread(target=keep_server_awake, daemon=True).start()
+    
+    print("[+] Developed Dynamic Token Redirector API is Running...")
+    app.run(host='0.0.0.0', port=5000, debug=False)
