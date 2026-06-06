@@ -8,7 +8,6 @@ app = Flask(__name__)
 
 USER_AGENT = "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp pb.1 EmbeddedLinux"
 
-# قاعدة بيانات السيرفرات والماكات الشغالة الخاصة بك
 SERVERS = {
     "atk": {
         "portal": "http://atk97.online:80/portal.php",
@@ -33,7 +32,6 @@ def get_live_token(server_key):
     session = requests.Session()
     session.headers.update(headers)
     try:
-        # خطوة المصافحة لتوليد توكن جديد متوافق مع وقت الطلب الحالي
         res = session.get(f"{srv['portal']}?type=stb&action=handshake", timeout=7)
         token = res.json().get('js', {}).get('token')
         return session, token
@@ -41,19 +39,16 @@ def get_live_token(server_key):
         print(f"[-] Handshake error for {server_key}: {e}")
         return None, None
 
-# مسار الصفحة الرئيسية (مهم جداً لعملية الإيقاظ الذاتي)
 @app.route('/')
 def home():
-    return "IPTV Streaming Proxy Server is Running Smoothly & Awake!", 200
+    return "IPTV Web Proxy Server is Awake & Running!", 200
 
 @app.route('/play/<server_key>/<stream_id>')
 def dynamic_proxy_stream(server_key, stream_id):
     if server_key not in SERVERS:
         return "Server not found", 404
         
-    print(f"[*] Request received for {server_key} - Channel: {stream_id}")
     session, token = get_live_token(server_key)
-    
     if not token:
         return "Handshake failed", 500
         
@@ -66,66 +61,48 @@ def dynamic_proxy_stream(server_key, stream_id):
         
         if raw_cmd:
             final_url = ""
-            
-            # 1. استخراج التوكن اللحظي الشغال لروابط play_token
             token_match = re.search(r'play_token=([A-Za-z0-9_-]+)', raw_cmd)
             if token_match:
-                play_token = token_match.group(1)
-                final_url = f"{srv['play_url']}/play/live.php?mac={srv['mac']}&stream={stream_id}&extension=ts&play_token={play_token}"
-                
-            # 2. إذا كان السيرفر يعتمد صيغة الـ live/play الدائرية التلقائية
+                final_url = f"{srv['play_url']}/play/live.php?mac={srv['mac']}&stream={stream_id}&extension=ts&play_token={token_match.group(1)}"
             elif "/live/play/" in raw_cmd:
                 clean_path = re.search(r'/live/play/[A-Za-z0-9==./_-]+', raw_cmd)
                 if clean_path:
                     final_url = f"{srv['play_url']}{clean_path.group(0).strip()}"
-                    
-            # 3. حل احتياطي في حال أرجع السيرفر رابط HTTP مباشر
-            elif "http" in raw_cmd:
-                http_match = re.search(r'(http[s]?://[^\s"\']+)', raw_cmd)
-                if http_match:
-                    final_url = http_match.group(1)
 
-            # تحويل السيرفر إلى نظام Proxy لبث الفيديو مباشرة للتطبيق بدون كود التحويل (302 Redirect)
             if final_url:
-                print(f"[+] Proxying Stream directly to App: {final_url}")
-                
-                # جلب البث المباشر من السيرفر الأصلي وتمريره كدفق (Stream) قطرة بقطرة
                 req_headers = {"User-Agent": USER_AGENT}
-                res = requests.get(final_url, headers=req_headers, stream=True, timeout=12)
+                # زيادة مهلة الانتظار واستخدام تشونك أكبر لثبات مشغلات الويب
+                res = requests.get(final_url, headers=req_headers, stream=True, timeout=15)
                 
                 def generate():
-                    for chunk in res.iter_content(chunk_size=8192): # تملأ البيانات بسرعة للمشغل
+                    # كتل بيانات بحجم 64 كيلوبايت لتغذية سريعة للمشغل على المتصفح
+                    for chunk in res.iter_content(chunk_size=65536):
                         if chunk:
                             yield chunk
                             
-                # بناء استجابة فيديو متكاملة مع هيدرز كسر حماية المشغلات والـ CORS
-                response = Response(generate(), content_type=res.headers.get('Content-Type', 'video/mp2t'))
+                response = Response(generate(), content_type="video/mp2t")
+                
+                # --- هيدرز حاسمة جداً لـ بلوجر والمشغلات الذكية لتخطي حظر CORS ---
                 response.headers["Access-Control-Allow-Origin"] = "*"
                 response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
-                response.headers["Access-Control-Allow-Headers"] = "User-Agent, X-Requested-With"
+                response.headers["Access-Control-Allow-Headers"] = "*"
                 response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
                 return response
 
     except Exception as e:
-        print(f"[-] Error proxying stream: {e}")
+        print(f"[-] Error: {e}")
         
     return "Stream unavailable", 404
 
-# --- آلية الإيقاظ الذاتي الذكية لمنع سيرفر Render من النوم ---
 def keep_server_awake():
-    time.sleep(60) # ننتظر دقيقة بعد تشغيل السيرفر لأول مرة
+    time.sleep(60)
     while True:
         try:
-            # السيرفر يقوم بطلب صفحته الرئيسية كل 12 دقيقة لمنع النوم التلقائي
             requests.get("https://iptv-proxy-ik6e.onrender.com/", timeout=10)
-            print("[+] Ping sent to Render: Server is kept awake successfully.")
-        except Exception as e:
-            print(f"[-] Ping failed (Server might be updating): {e}")
-        time.sleep(720) # 720 ثانية تعادل 12 دقيقة تماماً
+        except:
+            pass
+        time.sleep(720)
 
 if __name__ == '__main__':
-    # تشغيل خيط الإيقاظ الذاتي في الخلفية (Thread)
     threading.Thread(target=keep_server_awake, daemon=True).start()
-    
-    print("[+] Developed Streaming Proxy API is Running...")
     app.run(host='0.0.0.0', port=5000, debug=False)
