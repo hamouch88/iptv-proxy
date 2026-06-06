@@ -1,92 +1,118 @@
 import sys
+import re
 import requests
 from flask import Flask, Response, request, stream_with_context
 
 app = Flask(__name__)
 
-# إعدادات الوقت لمنع تجميد السيرفر (3 ثوان للاتصال، 10 ثوان لاستقبال البيانات)
-TIMEOUT_CONFIG = (3, 10)
+# بيانات سيرفر الماك أدريس الخاص بك
+PORTAL_URL = "http://atk97.online:80/portal.php"
+MAC_ADDRESS = "00:1A:79:0D:0F:7B"
 
-def generate_headers_from_request(client_request):
+# الهيدرز الإجبارية التي يطلبها سيرفر الماك ليعتقد أن الخادم هو جهاز MAG حقيقي
+STALKER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 sb2_netfront/4.1 Safari/533.3",
+    "X-User-Agent": "model=MAG250;gsw=2.18-r14-pub-250;ver=0.2.18;stb_type=pub;sn=0000000000000",
+    "Accept": "*/*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Cookie": f"mac={MAC_ADDRESS}",
+    "Referer": "http://atk97.online:80/c/",
+    "Connection": "keep-alive"
+}
+
+def get_stalker_token():
     """
-    تجميع وتوليد هيدرز احترافية تطابق تماماً ما يطلبه تطبيق أندرويد حقيقي
-    لتخطي حظر السيرفرات وحماية الجدار الناري
+    عمل مصادقة (Handshake) مع السيرفر الأصلي لجلب التوكن المؤقت صامتاً
     """
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
-        "Accept": "*/*",
-        "Accept-Language": "ar,en-US;q=0.9,en;q=0.8",
-        "Connection": "keep-alive",
-    }
-    
-    # تمرير هيدرز الـ Range إذا كان المشغل يطلب أجزاء معينة من الفيديو (مهم جداً للمتصفحات)
-    if 'Range' in client_request.headers:
-        headers['Range'] = client_request.headers['Range']
+    try:
+        # خطوة 1: طلب الـ Handshake
+        url_auth = f"{PORTAL_URL}?type=stb&action=handshake&js=true"
+        req = requests.get(url_auth, headers=STALKER_HEADERS, timeout=6)
+        data = req.json()
+        token = data.get('js', {}).get('token', '')
         
-    return headers
+        if not token:
+            # محاولة أخرى إذا كان الهيكل مختلفاً
+            token = data.get('result', {}).get('token', '')
+            
+        return token
+    except Exception as e:
+        print(f"[-] فشل جلب توكن الماك أدريس: {e}", file=sys.stderr)
+        return None
 
-def inject_cors_headers(response):
-    """
-    حقن الهيدرز الإجبارية لكسر حماية CORS في المدونات وتطبيق الأندرويد
-    """
+def inject_cors(response):
+    """ كسر حماية المتصفحات والمدونات والتطبيق نهائياً """
     response.headers['Access-Control-Allow-Origin'] = '*'
-    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
-    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Range, User-Agent, X-Requested-With'
-    response.headers['Access-Control-Expose-Headers'] = 'Content-Length, Content-Range'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Range, User-Agent'
     return response
 
 @app.route('/')
-def index():
-    """ استقبال إشارة الاستيقاظ والـ Ping من التطبيق """
-    res = Response("🚀 IPTV Proxy Gateway: ACTIVE", status=200, mimetype="text/plain")
-    return inject_cors_headers(res)
+def home():
+    """ إشارة الاستيقاظ والـ Ping من واجهة التطبيق """
+    res = Response("🚀 Stalker MAC Portal Proxy: ACTIVE", status=200, mimetype="text/plain")
+    return inject_cors(res)
 
 @app.route('/play/bolachas/<channel_id>', methods=['GET', 'OPTIONS'])
-def proxy_specific_channel(channel_id):
+def play_stalker_stream(channel_id):
+    """
+    البوابة السحرية: تأخذ الرقم التلقائي من واجهتك وتذهب لتوليد رابط البث الحي
+    وتلقيحه وتمريره للمشغل الخرافي والتطبيق مباشرة
+    """
     if request.method == 'OPTIONS':
-        return inject_cors_headers(Response(status=204))
-        
-    # الرابط الأصلي الذي جلبته
-    target_url = f"http://91.134.195.148:8080/play/bolachas/{channel_id}"
-    return execute_stream_proxy(target_url, request)
+        return inject_cors(Response(status=204))
 
-def execute_stream_proxy(target_url, client_request):
-    """
-    المحرك الرئيسي لضخ البيانات قطرة قطرة وعمل التلقيح التلقائي
-    """
-    def stream_generator():
-        try:
-            # محاكاة هيدرز العميل بالكامل وإرسالها للسيرفر الأصلي
-            req_headers = generate_headers_from_request(client_request)
+    # 1. جلب التوكن الحي الحالي من السيرفر
+    token = get_stalker_token()
+    if not token:
+        return inject_cors(Response("Error: Unable to authenticate with Stalker Portal.", status=403))
+
+    # 2. بناء الهيدرز المحدثة بالتوكن الجديد لطلب رابط القناة الفعلي
+    headers = STALKER_HEADERS.copy()
+    headers['Authorization'] = f"Bearer {token}"
+
+    # 3. طلب دفق رابط التشغيل الداخلي الحقيقي للقناة من السيرفر الأصلي
+    # ملحوظة: السيرفرات تعتمد سكريبت cmd لجلب البث المباشر الموجه
+    target_cmd_url = f"{PORTAL_URL}?type=itv&action=create_link&cmd=ffmpeg%20http://localhost/ch/{channel_id}&js=true"
+    
+    actual_stream_url = ""
+    try:
+        req_link = requests.get(target_cmd_url, headers=headers, timeout=6)
+        res_data = req_link.json()
+        # استخراج الرابط المباشر النهائي المخفي (غالباً يكون برابط يحتوي على باسوورد وتوكن ممتد)
+        raw_url = res_data.get('js', {}).get('cmd', '') or res_data.get('result', {})
+        
+        # تنظيف الرابط من أي زوائد مثل كلمة 'ffmpeg' إذا وجدت
+        actual_stream_url = raw_url.replace("ffmpeg ", "").strip()
+        if not actual_stream_url.startswith("http"):
+            # تكتيك بديل إذا كان السيرفر يرسل الرابط في خانة أخرى
+            actual_stream_url = f"http://atk97.online:80/play/bolachas/{channel_id}"
             
-            with requests.get(target_url, headers=req_headers, stream=True, timeout=TIMEOUT_CONFIG) as backend_res:
-                backend_res.raise_for_status()
-                
-                # ضخ البث على شكل كتل بحجم 4 كيلوبايت لسرعة الاستجابة ومنع انقطاع الدفق
-                for chunk in backend_res.iter_content(chunk_size=4096):
+    except Exception as e:
+        print(f"[-] خطأ في استخراج رابط البث الفعلي: {e}", file=sys.stderr)
+        actual_stream_url = f"http://atk97.online:80/play/bolachas/{channel_id}"
+
+    # 4. دالة ضخ دفق الفيديو وتلقيحه تلقائياً قطرة قطرة للمتصفح والتطبيق
+    def generate_stalker_chunks():
+        try:
+            # الاتصال بالرابط الفعلي المباشر الذي استخرجناه بالتوكن
+            with requests.get(actual_stream_url, headers=STALKER_HEADERS, stream=True, timeout=(4, 15)) as r:
+                r.raise_for_status()
+                for chunk in r.iter_content(chunk_size=8192):
                     if chunk:
                         yield chunk
-                    else:
-                        break
-        except requests.exceptions.RequestException as e:
-            print(f"[-] خطأ في جلب دفق البيانات: {e}", file=sys.stderr)
-        finally:
-            print("[*] تم إغلاق أنبوب البث صامتاً وتحرير الموارد.", file=sys.stderr)
+        except Exception as e:
+            print(f"[-] انقطع أنبوب دفق الماك: {e}", file=sys.stderr)
 
     try:
-        response = Response(stream_with_context(stream_generator()))
-        
-        # تعريفات البث الحي الإجبارية للمتصفحات والمشغلات الداخلية
+        response = Response(stream_with_context(generate_stalker_chunks()))
         response.headers['Content-Type'] = 'video/mp2t'
         response.headers['Connection'] = 'keep-alive'
         response.headers['Transfer-Encoding'] = 'chunked'
         response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-        
-        return inject_cors_headers(response)
-
+        return inject_cors(response)
     except Exception as e:
-        error_res = Response(f"Gateway Error: {str(e)}", status=500)
-        return inject_cors_headers(error_res)
+        return inject_cors(Response(f"Portal Gateway Error: {str(e)}", status=500))
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
