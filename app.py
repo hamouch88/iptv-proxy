@@ -7,7 +7,7 @@ from flask import Flask, Response, request, stream_with_context
 
 app = Flask(__name__)
 
-# تحديث الرابط الجديد للبوابة والماك أدريس المستخرج
+# البيانات الجديدة التي قمت بجلبها
 PORTAL_URL = "http://bolachas.live:80/portal.php"
 MAC_ADDRESS = "00:1A:79:c3:de:a5"
 
@@ -73,36 +73,44 @@ def play_stalker_stream(channel_id):
     if token:
         headers['Authorization'] = f"Bearer {token}"
 
-    actual_stream_url = f"http://bolachas.live:80/play/bolachas/{channel_id}"
     stop_event = threading.Event()
 
     def generate_stalker_chunks():
         try:
+            # 1. طلب الرابط الديناميكي المباشر من البوابة فوراً بدلاً من تخمين المسار
+            link_url = f"{PORTAL_URL}?type=itv&action=create_link&cmd=ffmpeg%20http://localhost/ch/{channel_id}&js=true"
+            req_link = requests.get(link_url, headers=headers, timeout=6)
+            link_data = req_link.json()
+            
+            # استخراج الرابط الحقيقي المولد من السيرفر
+            cmd_link = link_data.get('js', {}).get('cmd', '') or link_data.get('result', {}).get('cmd', '')
+            actual_stream_url = cmd_link.replace("ffmpeg ", "").strip()
+            
+            if not actual_stream_url or not actual_stream_url.startswith("http"):
+                print(f"[-] لم يتم العثور على رابط بث صالح للقناة {channel_id}", file=sys.stderr)
+                return
+
+            print(f"[+] الرابط المستخرج والجاهز للبث: {actual_stream_url}", file=sys.stderr)
+
+            # 2. تشغيل تايمر الـ Keep-Alive لحماية القناة من الإغلاق
             if token:
                 keep_alive_thread = threading.Thread(target=send_keep_alive, args=(token, channel_id, stop_event))
                 keep_alive_thread.daemon = True
                 keep_alive_thread.start()
 
-            with requests.get(actual_stream_url, headers=headers, stream=True, timeout=(6, 30)) as r:
+            # 3. سحب وضخ دفق الفيديو مباشرة للتطبيق
+            with requests.get(actual_stream_url, headers=STALKER_HEADERS, stream=True, timeout=(6, 30)) as r:
                 if r.status_code == 200:
                     for chunk in r.iter_content(chunk_size=32768): 
                         if chunk:
                             yield chunk
                 else:
-                    fallback_url = f"{PORTAL_URL}?type=itv&action=create_link&cmd=ffmpeg%20http://localhost/ch/{channel_id}&js=true"
-                    req_link = requests.get(fallback_url, headers=headers, timeout=5)
-                    link_cmd = req_link.json().get('js', {}).get('cmd', '').replace("ffmpeg ", "").strip()
-                    
-                    if link_cmd.startswith("http"):
-                        with requests.get(link_cmd, headers=STALKER_HEADERS, stream=True, timeout=(6, 30)) as r2:
-                            for chunk in r2.iter_content(chunk_size=32768):
-                                if chunk:
-                                    yield chunk
+                    print(f"[-] السيرفر الأصلي أعاد استجابة خاطئة: {r.status_code}", file=sys.stderr)
         except Exception as e:
-            print(f"[-] انقطع دفق البيانات: {e}", file=sys.stderr)
+            print(f"[-] انقطع دفق البيانات أثناء التشغيل: {e}", file=sys.stderr)
         finally:
             stop_event.set()
-            print("[*] تم تحرير جلسة التثبيت وإغلاق المسار الخارجي.", file=sys.stderr)
+            print("[*] تم إنهاء جلسة التثبيت وتحرير الذاكرة.", file=sys.stderr)
 
     try:
         response = Response(stream_with_context(generate_stalker_chunks()))
