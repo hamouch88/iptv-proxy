@@ -5,15 +5,18 @@ from flask import Flask, Response, request, stream_with_context
 
 app = Flask(__name__)
 
-# البيانات المستخرجة بدقة من السنيفر واللوق الخاص بك
-STREAM_SERVER = "http://185.243.7.190"
+# الإعدادات الحقيقية المستخرجة من الـ Hex Dump الجديد
+STREAM_SERVER = "http://bolachas.live"
 MAC_ADDRESS = "00:1A:79:c3:de:a5"
-PLAY_TOKEN = "jtj8Knnbq9"
+PLAY_TOKEN = "eq5jpzIfmJ"
 
-# الهيدرز القياسية لضمان تخطي أي حظر من السيرفر
+# الهيدرز المتطابقة تماماً مع الحزم المستخرجة من تطبيقك الأصلي
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 sb2_netfront/4.1 Safari/533.3",
+    "Host": "bolachas.live",
+    "User-Agent": "Mozilla/5.0",
     "Accept": "*/*",
+    "Accept-Language": "en_US",
+    "Range": "bytes=0-",
     "Connection": "keep-alive"
 }
 
@@ -25,7 +28,7 @@ def inject_cors(response):
 
 @app.route('/')
 def home():
-    res = Response("🚀 New Bolachas Stream Proxy: ACTIVE", status=200, mimetype="text/plain")
+    res = Response("🚀 Bolachas Fixed Proxy: ACTIVE", status=200, mimetype="text/plain")
     return inject_cors(res)
 
 @app.route('/play/bolachas/<channel_id>', methods=['GET', 'OPTIONS'])
@@ -33,23 +36,23 @@ def play_new_stream(channel_id):
     if request.method == 'OPTIONS':
         return inject_cors(Response(status=204))
 
-    # بناء الرابط الفعلي المباشر المتطابق مع اللوق تماماً
+    # بناء المسار الصحيح والمطابق للـ Hex Dump تماماً
     actual_stream_url = f"{STREAM_SERVER}/play/live.php?mac={MAC_ADDRESS}&stream={channel_id}&extension=ts&play_token={PLAY_TOKEN}"
     
-    print(f"[+] جاري جلب البث المباشر من الرابط الجديد للقناة: {channel_id}", file=sys.stderr)
+    print(f"[+] جاري جلب دفق الفيديو المباشر للقناة: {channel_id}", file=sys.stderr)
 
     def generate_chunks():
         try:
-            # الاتصال المباشر بالسيرفر وبدء سحب دفق الفيديو (TS)
+            # طلب البث بالهيدرز الأصلية الصحيحة
             with requests.get(actual_stream_url, headers=HEADERS, stream=True, timeout=(6, 30)) as r:
                 if r.status_code == 200:
                     for chunk in r.iter_content(chunk_size=32768): 
                         if chunk:
                             yield chunk
                 else:
-                    print(f"[-] السيرفر الأصلي أعاد خطأ استجابة: {r.status_code}", file=sys.stderr)
+                    print(f"[-] السيرفر الأصلي رفض الطلب بكود: {r.status_code}", file=sys.stderr)
         except Exception as e:
-            print(f"[-] انقطع الاتصال أثناء ضخ الفيديو: {e}", file=sys.stderr)
+            print(f"[-] انقطع الاتصال أثناء تمرير البث: {e}", file=sys.stderr)
 
     try:
         response = Response(stream_with_context(generate_chunks()))
