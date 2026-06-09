@@ -2,7 +2,8 @@ import sys
 import time
 import threading
 import requests
-from flask import Flask, Response, request, redirect
+import os
+from flask import Flask, Response, request, stream_with_context
 
 app = Flask(__name__)
 
@@ -71,34 +72,53 @@ def play_stalker_stream(channel_id):
     if token:
         headers['Authorization'] = f"Bearer {token}"
 
-    # طلب رابط الـ cmd الفعلي لتثبيت وتشغيل الجلسة
-    fallback_url = f"{PORTAL_URL}?type=itv&action=create_link&cmd=ffmpeg%20http://localhost/ch/{channel_id}&js=true"
-    
+    actual_stream_url = f"http://atk97.online:80/play/bolachas/{channel_id}"
+    stop_event = threading.Event()
+
+    # دالة تدوير البث الذكي المباشر المفهوم لـ AppCreator24
+    def generate_stalker_chunks():
+        try:
+            if token:
+                keep_alive_thread = threading.Thread(target=send_keep_alive, args=(token, channel_id, stop_event))
+                keep_alive_thread.daemon = True
+                keep_alive_thread.start()
+
+            # فتح اتصال مباشر متدفق مع السيرفر الأصلي لقراءة الداتا وتمريرها فوراً
+            with requests.get(actual_stream_url, headers=headers, stream=True, timeout=(6, 30)) as r:
+                if r.status_code == 200:
+                    # حجم بافر مثالي (32 كيلوبايت) لمنع تقطيع الفيديو في مشغلات الويب
+                    for chunk in r.iter_content(chunk_size=32768): 
+                        if chunk:
+                            yield chunk
+                else:
+                    # تكتيك احتياطي في حال تطلب الأمر تفكيك الرابط الداخلي لقنوات معينة
+                    fallback_url = f"{PORTAL_URL}?type=itv&action=create_link&cmd=ffmpeg%20http://localhost/ch/{channel_id}&js=true"
+                    req_link = requests.get(fallback_url, headers=headers, timeout=5)
+                    link_cmd = req_link.json().get('js', {}).get('cmd', '').replace("ffmpeg ", "").strip()
+                    
+                    if link_cmd.startswith("http"):
+                        with requests.get(link_cmd, headers=STALKER_HEADERS, stream=True, timeout=(6, 30)) as r2:
+                            for chunk in r2.iter_content(chunk_size=32768):
+                                if chunk:
+                                    yield chunk
+        except Exception as e:
+            print(f"[-] انقطع دفق البيانات: {e}", file=sys.stderr)
+        finally:
+            stop_event.set()
+            print("[*] تم تحرير جلسة التثبيت وإغلاق المسار الخارجي.", file=sys.stderr)
+
     try:
-        req_link = requests.get(fallback_url, headers=headers, timeout=6)
-        link_cmd = req_link.json().get('js', {}).get('cmd', '').replace("ffmpeg ", "").strip()
-        
-        if not link_cmd.startswith("http"):
-            # إذا فشل، نستخدم الرابط الافتراضي كملاذ أخير
-            link_cmd = f"http://atk97.online:80/play/bolachas/{channel_id}"
-
-        # تشغيل الـ Keep alive في الخلفية ليبقى السيرفر الأصلي يبث للقناة
-        stop_event = threading.Event()
-        if token:
-            keep_alive_thread = threading.Thread(target=send_keep_alive, args=(token, channel_id, stop_event))
-            keep_alive_thread.daemon = True
-            keep_alive_thread.start()
-
-        # التكتيك السحري: إعادة توجيه المشغل مباشرة للمصدر بدلاً من خنق سيرفرك
-        print(f"[+] إعادة توجيه المشغل إلى الرابط الفعلي: {link_cmd}", file=sys.stderr)
-        return redirect(link_cmd)
-
+        response = Response(stream_with_context(generate_stalker_chunks()))
+        # الهيدرز الضرورية لتجعل تطبيق AppCreator24 يتعامل مع الرابط كفيديو بث مباشر حقيقي
+        response.headers['Content-Type'] = 'video/mp2t'
+        response.headers['Connection'] = 'keep-alive'
+        response.headers['Transfer-Encoding'] = 'chunked'
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        return inject_cors(response)
     except Exception as e:
-        print(f"[-] خطأ في معالجة طلب القناة: {e}", file=sys.stderr)
-        return redirect(f"http://atk97.online:80/play/bolachas/{channel_id}")
+        return inject_cors(Response(f"Portal Error: {str(e)}", status=500))
 
 if __name__ == '__main__':
-    # جعل السكربت يستمع للبورت المتغير تلقائياً لتفادي أي تعارض مع المنصات السحابية
-    import os
+    # حل مشكلة بورت Railway والمنصات السحابية بشكل تلقائي ذكي
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
