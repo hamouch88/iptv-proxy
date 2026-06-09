@@ -7,8 +7,9 @@ from flask import Flask, Response, request, stream_with_context
 
 app = Flask(__name__)
 
-PORTAL_URL = "http://atk97.online:80/portal.php"
-MAC_ADDRESS = "00:1A:79:0D:0F:7B"
+# تحديث الرابط الجديد للبوابة والماك أدريس المستخرج
+PORTAL_URL = "http://bolachas.live:80/portal.php"
+MAC_ADDRESS = "00:1A:79:c3:de:a5"
 
 STALKER_HEADERS = {
     "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 sb2_netfront/4.1 Safari/533.3",
@@ -16,7 +17,7 @@ STALKER_HEADERS = {
     "Accept": "*/*",
     "Accept-Language": "en-US,en;q=0.9",
     "Cookie": f"mac={MAC_ADDRESS}",
-    "Referer": "http://atk97.online:80/c/",
+    "Referer": "http://bolachas.live:80/c/",
     "Connection": "keep-alive"
 }
 
@@ -72,10 +73,9 @@ def play_stalker_stream(channel_id):
     if token:
         headers['Authorization'] = f"Bearer {token}"
 
-    actual_stream_url = f"http://atk97.online:80/play/bolachas/{channel_id}"
+    actual_stream_url = f"http://bolachas.live:80/play/bolachas/{channel_id}"
     stop_event = threading.Event()
 
-    # دالة تدوير البث الذكي المباشر المفهوم لـ AppCreator24
     def generate_stalker_chunks():
         try:
             if token:
@@ -83,15 +83,12 @@ def play_stalker_stream(channel_id):
                 keep_alive_thread.daemon = True
                 keep_alive_thread.start()
 
-            # فتح اتصال مباشر متدفق مع السيرفر الأصلي لقراءة الداتا وتمريرها فوراً
             with requests.get(actual_stream_url, headers=headers, stream=True, timeout=(6, 30)) as r:
                 if r.status_code == 200:
-                    # حجم بافر مثالي (32 كيلوبايت) لمنع تقطيع الفيديو في مشغلات الويب
                     for chunk in r.iter_content(chunk_size=32768): 
                         if chunk:
                             yield chunk
                 else:
-                    # تكتيك احتياطي في حال تطلب الأمر تفكيك الرابط الداخلي لقنوات معينة
                     fallback_url = f"{PORTAL_URL}?type=itv&action=create_link&cmd=ffmpeg%20http://localhost/ch/{channel_id}&js=true"
                     req_link = requests.get(fallback_url, headers=headers, timeout=5)
                     link_cmd = req_link.json().get('js', {}).get('cmd', '').replace("ffmpeg ", "").strip()
@@ -109,7 +106,6 @@ def play_stalker_stream(channel_id):
 
     try:
         response = Response(stream_with_context(generate_stalker_chunks()))
-        # الهيدرز الضرورية لتجعل تطبيق AppCreator24 يتعامل مع الرابط كفيديو بث مباشر حقيقي
         response.headers['Content-Type'] = 'video/mp2t'
         response.headers['Connection'] = 'keep-alive'
         response.headers['Transfer-Encoding'] = 'chunked'
@@ -119,6 +115,5 @@ def play_stalker_stream(channel_id):
         return inject_cors(Response(f"Portal Error: {str(e)}", status=500))
 
 if __name__ == '__main__':
-    # حل مشكلة بورت Railway والمنصات السحابية بشكل تلقائي ذكي
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
