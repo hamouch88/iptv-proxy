@@ -5,12 +5,11 @@ from flask import Flask, Response, request, stream_with_context
 
 app = Flask(__name__)
 
-# الإعدادات الحقيقية المستخرجة من الـ Hex Dump الجديد
+# البيانات المستخرجة بدقة من الـ Hex Dump
 STREAM_SERVER = "http://bolachas.live"
 MAC_ADDRESS = "00:1A:79:c3:de:a5"
 PLAY_TOKEN = "eq5jpzIfmJ"
 
-# الهيدرز المتطابقة تماماً مع الحزم المستخرجة من تطبيقك الأصلي
 HEADERS = {
     "Host": "bolachas.live",
     "User-Agent": "Mozilla/5.0",
@@ -31,19 +30,28 @@ def home():
     res = Response("🚀 Bolachas Fixed Proxy: ACTIVE", status=200, mimetype="text/plain")
     return inject_cors(res)
 
+# المسار الذكي: يستقبل الرابط سواء بـ /play/bolachas/ أو بالطلب المباشر
 @app.route('/play/bolachas/<channel_id>', methods=['GET', 'OPTIONS'])
-def play_new_stream(channel_id):
+@app.route('/play/live.php', methods=['GET', 'OPTIONS'])
+def play_new_stream(channel_id=None):
     if request.method == 'OPTIONS':
         return inject_cors(Response(status=204))
 
-    # بناء المسار الصحيح والمطابق للـ Hex Dump تماماً
+    # إذا تم استدعاء الرابط بالصيغة القديمة، نقوم بجلب رقم القناة من الـ URL المتغير
+    if not channel_id:
+        channel_id = request.args.get('stream')
+        
+    if not channel_id:
+        return inject_cors(Response("Missing Channel ID", status=400))
+
+    # تنظيف رقم القناة من أي امتدادات مثل .ts لو وُجدت بالخطأ
+    channel_id = channel_id.split('.')[0]
+
     actual_stream_url = f"{STREAM_SERVER}/play/live.php?mac={MAC_ADDRESS}&stream={channel_id}&extension=ts&play_token={PLAY_TOKEN}"
-    
-    print(f"[+] جاري جلب دفق الفيديو المباشر للقناة: {channel_id}", file=sys.stderr)
+    print(f"[+] جاري تمرير البث المباشر للقناة: {channel_id}", file=sys.stderr)
 
     def generate_chunks():
         try:
-            # طلب البث بالهيدرز الأصلية الصحيحة
             with requests.get(actual_stream_url, headers=HEADERS, stream=True, timeout=(6, 30)) as r:
                 if r.status_code == 200:
                     for chunk in r.iter_content(chunk_size=32768): 
