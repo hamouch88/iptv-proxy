@@ -1,56 +1,21 @@
 import sys
-import time
-import threading
-import requests
 import os
+import requests
 from flask import Flask, Response, request, stream_with_context
 
 app = Flask(__name__)
 
-# البيانات الجديدة التي قمت بجلبها
-PORTAL_URL = "http://bolachas.live:80/portal.php"
+# البيانات المستخرجة بدقة من السنيفر واللوق الخاص بك
+STREAM_SERVER = "http://185.243.7.190"
 MAC_ADDRESS = "00:1A:79:c3:de:a5"
+PLAY_TOKEN = "jtj8Knnbq9"
 
-STALKER_HEADERS = {
+# الهيدرز القياسية لضمان تخطي أي حظر من السيرفر
+HEADERS = {
     "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 sb2_netfront/4.1 Safari/533.3",
-    "X-User-Agent": "model=MAG250;gsw=2.18-r14-pub-250;ver=0.2.18;stb_type=pub;sn=0000000000000",
     "Accept": "*/*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Cookie": f"mac={MAC_ADDRESS}",
-    "Referer": "http://bolachas.live:80/c/",
     "Connection": "keep-alive"
 }
-
-def get_stalker_token():
-    try:
-        url_auth = f"{PORTAL_URL}?type=stb&action=handshake&js=true"
-        req = requests.get(url_auth, headers=STALKER_HEADERS, timeout=6)
-        data = req.json()
-        token = data.get('js', {}).get('token', '') or data.get('result', {}).get('token', '')
-        return token
-    except Exception as e:
-        print(f"[-] فشل جلب توكن الماك أدريس: {e}", file=sys.stderr)
-        return None
-
-def send_keep_alive(token, channel_id, stop_event):
-    headers = STALKER_HEADERS.copy()
-    headers['Authorization'] = f"Bearer {token}"
-    ping_url = f"{PORTAL_URL}?type=itv&action=create_link&cmd=ffmpeg%20http://localhost/ch/{channel_id}&js=true"
-    
-    while not stop_event.is_set():
-        for _ in range(25):
-            if stop_event.is_set():
-                break
-            time.sleep(1)
-            
-        if stop_event.is_set():
-            break
-            
-        try:
-            requests.get(ping_url, headers=headers, timeout=5)
-            print(f"[+] تم إرسال نبضة التثبيت بنجاح للقناة {channel_id}", file=sys.stderr)
-        except Exception as e:
-            print(f"[-] فشل إرسال نبضة التثبيت: {e}", file=sys.stderr)
 
 def inject_cors(response):
     response.headers['Access-Control-Allow-Origin'] = '*'
@@ -60,67 +25,41 @@ def inject_cors(response):
 
 @app.route('/')
 def home():
-    res = Response("🚀 Stalker Portal Proxy with Keep-Alive: ACTIVE", status=200, mimetype="text/plain")
+    res = Response("🚀 New Bolachas Stream Proxy: ACTIVE", status=200, mimetype="text/plain")
     return inject_cors(res)
 
 @app.route('/play/bolachas/<channel_id>', methods=['GET', 'OPTIONS'])
-def play_stalker_stream(channel_id):
+def play_new_stream(channel_id):
     if request.method == 'OPTIONS':
         return inject_cors(Response(status=204))
 
-    token = get_stalker_token()
-    headers = STALKER_HEADERS.copy()
-    if token:
-        headers['Authorization'] = f"Bearer {token}"
+    # بناء الرابط الفعلي المباشر المتطابق مع اللوق تماماً
+    actual_stream_url = f"{STREAM_SERVER}/play/live.php?mac={MAC_ADDRESS}&stream={channel_id}&extension=ts&play_token={PLAY_TOKEN}"
+    
+    print(f"[+] جاري جلب البث المباشر من الرابط الجديد للقناة: {channel_id}", file=sys.stderr)
 
-    stop_event = threading.Event()
-
-    def generate_stalker_chunks():
+    def generate_chunks():
         try:
-            # 1. طلب الرابط الديناميكي المباشر من البوابة فوراً بدلاً من تخمين المسار
-            link_url = f"{PORTAL_URL}?type=itv&action=create_link&cmd=ffmpeg%20http://localhost/ch/{channel_id}&js=true"
-            req_link = requests.get(link_url, headers=headers, timeout=6)
-            link_data = req_link.json()
-            
-            # استخراج الرابط الحقيقي المولد من السيرفر
-            cmd_link = link_data.get('js', {}).get('cmd', '') or link_data.get('result', {}).get('cmd', '')
-            actual_stream_url = cmd_link.replace("ffmpeg ", "").strip()
-            
-            if not actual_stream_url or not actual_stream_url.startswith("http"):
-                print(f"[-] لم يتم العثور على رابط بث صالح للقناة {channel_id}", file=sys.stderr)
-                return
-
-            print(f"[+] الرابط المستخرج والجاهز للبث: {actual_stream_url}", file=sys.stderr)
-
-            # 2. تشغيل تايمر الـ Keep-Alive لحماية القناة من الإغلاق
-            if token:
-                keep_alive_thread = threading.Thread(target=send_keep_alive, args=(token, channel_id, stop_event))
-                keep_alive_thread.daemon = True
-                keep_alive_thread.start()
-
-            # 3. سحب وضخ دفق الفيديو مباشرة للتطبيق
-            with requests.get(actual_stream_url, headers=STALKER_HEADERS, stream=True, timeout=(6, 30)) as r:
+            # الاتصال المباشر بالسيرفر وبدء سحب دفق الفيديو (TS)
+            with requests.get(actual_stream_url, headers=HEADERS, stream=True, timeout=(6, 30)) as r:
                 if r.status_code == 200:
                     for chunk in r.iter_content(chunk_size=32768): 
                         if chunk:
                             yield chunk
                 else:
-                    print(f"[-] السيرفر الأصلي أعاد استجابة خاطئة: {r.status_code}", file=sys.stderr)
+                    print(f"[-] السيرفر الأصلي أعاد خطأ استجابة: {r.status_code}", file=sys.stderr)
         except Exception as e:
-            print(f"[-] انقطع دفق البيانات أثناء التشغيل: {e}", file=sys.stderr)
-        finally:
-            stop_event.set()
-            print("[*] تم إنهاء جلسة التثبيت وتحرير الذاكرة.", file=sys.stderr)
+            print(f"[-] انقطع الاتصال أثناء ضخ الفيديو: {e}", file=sys.stderr)
 
     try:
-        response = Response(stream_with_context(generate_stalker_chunks()))
+        response = Response(stream_with_context(generate_chunks()))
         response.headers['Content-Type'] = 'video/mp2t'
         response.headers['Connection'] = 'keep-alive'
         response.headers['Transfer-Encoding'] = 'chunked'
         response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
         return inject_cors(response)
     except Exception as e:
-        return inject_cors(Response(f"Portal Error: {str(e)}", status=500))
+        return inject_cors(Response(f"Proxy Error: {str(e)}", status=500))
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
