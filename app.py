@@ -2,7 +2,7 @@ import sys
 import time
 import threading
 import requests
-from flask import Flask, Response, request, stream_with_context
+from flask import Flask, Response, request, redirect
 
 app = Flask(__name__)
 
@@ -20,7 +20,6 @@ STALKER_HEADERS = {
 }
 
 def get_stalker_token():
-    """ جلب توكن المصادقة المبدئي """
     try:
         url_auth = f"{PORTAL_URL}?type=stb&action=handshake&js=true"
         req = requests.get(url_auth, headers=STALKER_HEADERS, timeout=6)
@@ -32,18 +31,11 @@ def get_stalker_token():
         return None
 
 def send_keep_alive(token, channel_id, stop_event):
-    """
-    [منظومة التثبيت السحرية]
-    ترسل نبضات تنشيط للسيرفر الأصلي كل 25 ثانية لمنع قفل القناة بعد نصف دقيقة
-    """
     headers = STALKER_HEADERS.copy()
     headers['Authorization'] = f"Bearer {token}"
-    
-    # روابط الحفاظ على الجلسة الحية في بوابات الـ Stalker
     ping_url = f"{PORTAL_URL}?type=itv&action=create_link&cmd=ffmpeg%20http://localhost/ch/{channel_id}&js=true"
     
     while not stop_event.is_set():
-        # انتظر 25 ثانية قبل إرسال النبضة القادمة
         for _ in range(25):
             if stop_event.is_set():
                 break
@@ -53,7 +45,6 @@ def send_keep_alive(token, channel_id, stop_event):
             break
             
         try:
-            # إرسال نبضة الإبقاء حياً (Keep Alive Ping)
             requests.get(ping_url, headers=headers, timeout=5)
             print(f"[+] تم إرسال نبضة التثبيت بنجاح للقناة {channel_id}", file=sys.stderr)
         except Exception as e:
@@ -80,51 +71,34 @@ def play_stalker_stream(channel_id):
     if token:
         headers['Authorization'] = f"Bearer {token}"
 
-    actual_stream_url = f"http://atk97.online:80/play/bolachas/{channel_id}"
-
-    # حدث لإيقاف خيط الـ Keep-Alive عند خروج المستخدم من القناة
-    stop_event = threading.Event()
-
-    def generate_stalker_chunks():
-        try:
-            # تشغيل خيط الـ Keep-Alive في الخلفية لتنشيط الجلسة دورياً غصباً عن السيرفر
-            if token:
-                keep_alive_thread = threading.Thread(target=send_keep_alive, args=(token, channel_id, stop_event))
-                keep_alive_thread.daemon = True
-                keep_alive_thread.start()
-
-            with requests.get(actual_stream_url, headers=headers, stream=True, timeout=(6, 25)) as r:
-                if r.status_code == 200:
-                    for chunk in r.iter_content(chunk_size=16384): # رفع الحجم لضمان بافر مستقر
-                        if chunk:
-                            yield chunk
-                else:
-                    # تكتيك احتياطي إذا كان يتطلب الـ cmd في بعض القنوات
-                    fallback_url = f"{PORTAL_URL}?type=itv&action=create_link&cmd=ffmpeg%20http://localhost/ch/{channel_id}&js=true"
-                    req_link = requests.get(fallback_url, headers=headers, timeout=5)
-                    link_cmd = req_link.json().get('js', {}).get('cmd', '').replace("ffmpeg ", "").strip()
-                    
-                    if link_cmd.startswith("http"):
-                        with requests.get(link_cmd, headers=STALKER_HEADERS, stream=True, timeout=(6, 25)) as r2:
-                            for chunk in r2.iter_content(chunk_size=16384):
-                                if chunk:
-                                    yield chunk
-        except Exception as e:
-            print(f"[-] انقطع أنبوب دفق الماك: {e}", file=sys.stderr)
-        finally:
-            # إيقاف خيط الـ Keep-Alive وتحرير الموارد فوراً عند قفل المشغل
-            stop_event.set()
-            print("[*] تم إغلاق الاتصال وتحرير جلسة التثبيت.", file=sys.stderr)
-
+    # طلب رابط الـ cmd الفعلي لتثبيت وتشغيل الجلسة
+    fallback_url = f"{PORTAL_URL}?type=itv&action=create_link&cmd=ffmpeg%20http://localhost/ch/{channel_id}&js=true"
+    
     try:
-        response = Response(stream_with_context(generate_stalker_chunks()))
-        response.headers['Content-Type'] = 'video/mp2t'
-        response.headers['Connection'] = 'keep-alive'
-        response.headers['Transfer-Encoding'] = 'chunked'
-        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-        return inject_cors(response)
+        req_link = requests.get(fallback_url, headers=headers, timeout=6)
+        link_cmd = req_link.json().get('js', {}).get('cmd', '').replace("ffmpeg ", "").strip()
+        
+        if not link_cmd.startswith("http"):
+            # إذا فشل، نستخدم الرابط الافتراضي كملاذ أخير
+            link_cmd = f"http://atk97.online:80/play/bolachas/{channel_id}"
+
+        # تشغيل الـ Keep alive في الخلفية ليبقى السيرفر الأصلي يبث للقناة
+        stop_event = threading.Event()
+        if token:
+            keep_alive_thread = threading.Thread(target=send_keep_alive, args=(token, channel_id, stop_event))
+            keep_alive_thread.daemon = True
+            keep_alive_thread.start()
+
+        # التكتيك السحري: إعادة توجيه المشغل مباشرة للمصدر بدلاً من خنق سيرفرك
+        print(f"[+] إعادة توجيه المشغل إلى الرابط الفعلي: {link_cmd}", file=sys.stderr)
+        return redirect(link_cmd)
+
     except Exception as e:
-        return inject_cors(Response(f"Portal Gateway Error: {str(e)}", status=500))
+        print(f"[-] خطأ في معالجة طلب القناة: {e}", file=sys.stderr)
+        return redirect(f"http://atk97.online:80/play/bolachas/{channel_id}")
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
+    # جعل السكربت يستمع للبورت المتغير تلقائياً لتفادي أي تعارض مع المنصات السحابية
+    import os
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
